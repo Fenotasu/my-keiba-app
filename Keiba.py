@@ -1,133 +1,138 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import plotly.express as px
 import requests
 from bs4 import BeautifulSoup
 import time
+from datetime import datetime, timedelta
 
 # --- ページ設定 ---
-st.set_page_config(page_title="当日大口流入・総括まとめ", layout="wide")
+st.set_page_config(page_title="完全自動・大口監視くん", layout="wide")
 
-# --- データ取得関数 ---
-def get_real_odds(race_id):
-    # オッズページ(直前想定)と結果ページ(確定後)の両方をチェック
-    urls = {
-        "before": f"https://race.netkeiba.com/race/odds.html?race_id={race_id}",
-        "after": f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
-    }
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
-    results = {}
+# セッション状態の初期化
+if 'saved_odds' not in st.session_state: st.session_state['saved_odds'] = {}
+if 'logs' not in st.session_state: st.session_state['logs'] = []
+if 'is_running' not in st.session_state: st.session_state['is_running'] = False
 
-    for key, url in urls.items():
-        try:
-            res = requests.get(url, headers=headers, timeout=5)
-            res.encoding = res.apparent_encoding
-            soup = BeautifulSoup(res.text, 'html.parser')
-            rows = soup.select('tr.HorseList')
-            if not rows: continue
-            
-            data = []
-            for row in rows:
-                name_tag = row.select_one('.HorseName') or row.select_one('.Horse_Name')
-                win_tag = row.select_one('.WinOdds') or row.select_one('.Odds')
-                place_tag = row.select_one('.PlaceOdds')
-                
-                if not name_tag or not win_tag: continue
-                
-                name = name_tag.text.strip()
-                win = win_tag.text.strip().replace('---', '0').replace('取消', '0')
-                place = place_tag.text.split('-')[0].strip() if place_tag else "0.0"
-                
-                try:
-                    win_f, place_f = float(win), float(place)
-                    if win_f <= 0: continue
-                    data.append({"馬名": name, "単勝": win_f, "複勝": place_f})
-                except: continue
-            results[key] = pd.DataFrame(data)
-        except: continue
-    return results
+# --- データ取得・解析関数 ---
+def get_odds_data(race_id, mode="odds"):
+    """mode="odds"で10分前用、mode="result"で確定後用を取得"""
+    page = "odds" if mode == "odds" else "result"
+    url = f"https://race.netkeiba.com/race/{page}.html?race_id={race_id}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        res.encoding = res.apparent_encoding
+        soup = BeautifulSoup(res.text, 'html.parser')
+        rows = soup.select('tr.HorseList')
+        data = []
+        for row in rows:
+            name = (row.select_one('.HorseName') or row.select_one('.Horse_Name')).text.strip()
+            win = (row.select_one('.WinOdds') or row.select_one('.Odds')).text.strip().replace('---', '0').replace('取消', '0')
+            place = row.select_one('.PlaceOdds').text.split('-')[0].strip() if row.select_one('.PlaceOdds') else "0.0"
+            data.append({"馬名": name, f"複勝_{mode}": float(place)})
+        return pd.DataFrame(data)
+    except:
+        return pd.DataFrame()
 
-# --- メイン画面 ---
-st.title("🏆 本日の大口流入馬・総括ベスト10")
-st.markdown("1日の終わりに、全レースの「締め切り直前の動き」を自動でまとめて答え合わせします。")
-
-# サイドバー
-st.sidebar.header("⚙️ 解析設定")
-# 今週末の開催コード例（2026年 東京:05, 京都:08, 小倉:10）
-date_code = st.sidebar.text_input("開催日コード (8桁)", value="20260501")
-venues = st.sidebar.multiselect("会場コード", ["05", "08", "10"], default=["05", "08"])
-st.sidebar.caption("05:東京, 08:京都, 10:小倉")
-
-if st.sidebar.button("本日の全レースを一括解析"):
-    all_abnormal_data = []
-    progress_bar = st.progress(0)
-    
-    total_steps = len(venues) * 12
-    step = 0
-
-    status_text = st.empty()
-
-    for v in venues:
+def get_race_schedule(date_code, venue):
+    """当日の全12レースの発走時刻を自動取得する"""
+    url = f"https://race.netkeiba.com/top/race_list.html?kaisai_date={date_code}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    schedule = {}
+    try:
+        res = requests.get(url, headers=headers)
+        res.encoding = res.apparent_encoding
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # 指定会場のブロックを探す
+        venue_names = {"05": "東京", "08": "京都", "10": "小倉", "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "06": "中山", "07": "中京", "09": "阪神"}
+        v_name = venue_names.get(venue, "")
+        
+        # 簡易的に全IDを生成して各レースページから時間を取る（精度重視）
         for r in range(1, 13):
-            step += 1
-            race_no = str(r).zfill(2)
-            race_id = f"{date_code}{v}{race_no}"
-            status_text.text(f"解析中: {v}会場 {r}R (ID:{race_id})...")
+            rid = f"{date_code}{venue}{str(r).zfill(2)}"
+            r_res = requests.get(f"https://race.netkeiba.com/race/summay.html?race_id={rid}", headers=headers)
+            r_soup = BeautifulSoup(r_res.text, 'html.parser')
+            time_str = r_soup.select_one('.RaceData01').text.split('発走')[0][-6:].strip() if r_soup.select_one('.RaceData01') else ""
+            if ":" in time_str:
+                schedule[rid] = time_str
+        return schedule
+    except:
+        return {}
+
+# --- メイン UI ---
+st.title("🤖 10分前オッズ自動予約・監視システム")
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.header("⚙️ 監視設定")
+    date_input = st.text_input("開催日(8桁)", value=datetime.now().strftime("%Y%m%d"))
+    venue_input = st.selectbox("会場", ["05(東京)", "08(京都)", "10(小倉)"])[:2]
+    
+    if st.button("🚀 自動監視を開始する"):
+        st.session_state['is_running'] = True
+        st.session_state['schedule'] = get_race_schedule(date_input, venue_input)
+        st.session_state['logs'].append(f"✅ {datetime.now().strftime('%H:%M')} 監視を開始しました")
+
+    if st.button("📊 夜の答え合わせ（一括解析）"):
+        if not st.session_state['saved_odds']:
+            st.error("保存されたデータがありません。")
+        else:
+            all_results = []
+            for rid, base_df in st.session_state['saved_odds'].items():
+                now_df = get_odds_data(rid, mode="result")
+                if not now_df.empty:
+                    merged = pd.merge(now_df, base_df, on="馬名")
+                    merged['下落率'] = (merged['複勝_odds'] - merged['複勝_result']) / merged['複勝_odds']
+                    merged['レース'] = f"{rid[-2:]}R"
+                    all_results.append(merged)
             
-            res = get_real_odds(race_id)
-            # 両方のページからデータが取れた場合のみ比較（＝レース終了後）
-            if "before" in res and "after" in res:
-                df_b, df_a = res["before"], res["after"]
-                merged = pd.merge(df_a, df_b, on="馬名", suffixes=('_確定', '_直前'))
+            if all_results:
+                final_df = pd.concat(all_results).sort_values('下落率', ascending=False)
+                st.session_state['top10'] = final_df.head(10)
+                st.success("解析が完了しました！")
+
+with col2:
+    st.header("📈 実行ステータス")
+    if st.session_state['is_running']:
+        current_time = datetime.now().strftime("%H:%M")
+        st.success(f"現在、自動監視が稼働中です（現在時刻: {current_time}）")
+        
+        # 監視ログの表示
+        st.text_area("ログ", "\n".join(st.session_state['logs']), height=200)
+        
+        # 監視ロジック（画面が開いている間動く）
+        placeholder = st.empty()
+        if 'schedule' in st.session_state:
+            for rid, start_t in st.session_state['schedule'].items():
+                target_dt = datetime.strptime(start_t, "%H:%M") - timedelta(minutes=10)
+                target_t = target_dt.strftime("%H:%M")
                 
-                # 下落率の計算
-                merged['下落率'] = (merged['複勝_直前'] - merged['複勝_確定']) / merged['複勝_直前']
-                merged['会場R'] = f"{v}会場 {r}R"
-                all_abnormal_data.append(merged)
-            
-            progress_bar.progress(step / total_steps)
-            time.sleep(0.2) # 相手サーバーへの負荷軽減（重要）
-
-    if all_abnormal_data:
-        final_df = pd.concat(all_abnormal_data)
-        # 異常値（下落率）が高い順に並べ替え
-        top10 = final_df.sort_values('下落率', ascending=False).head(10)
-        st.session_state['top10'] = top10
-        status_text.success("すべての解析が完了しました！")
+                if current_time == target_t and rid not in st.session_state['saved_odds']:
+                    df = get_odds_data(rid, mode="odds")
+                    if not df.empty:
+                        st.session_state['saved_odds'][rid] = df
+                        st.session_state['logs'].append(f"💰 {current_time}: {rid} の10分前データを取得・保存しました")
+                        st.rerun()
+        
+        # 30秒ごとに画面を更新して監視を継続
+        time.sleep(30)
+        st.rerun()
     else:
-        status_text.error("データが取得できませんでした。レース終了後にお試しください。")
+        st.info("設定を確認し、「自動監視を開始する」を押してください。")
 
-# --- 結果表示 ---
+# --- 解析結果の表示 ---
 if 'top10' in st.session_state:
+    st.divider()
+    st.header("🔥 本日の大口流入ランキング BEST10")
     df = st.session_state['top10']
     
-    st.subheader("🔥 本日の「複勝」大口流入ランキング")
-    st.info("締め切り直前にオッズが急落した（＝大量投票された）馬のトップ10です。")
-
-    # 上位3頭をカード形式で
-    top_cols = st.columns(3)
-    for i in range(min(3, len(df))):
-        row = df.iloc[i]
-        with top_cols[i]:
-            st.warning(f"RANK {i+1}")
-            st.metric(label=f"{row['会場R']} : {row['馬名']}", 
-                      value=f"確定 {row['複勝_確定']:.1f}", 
-                      delta=f"下落率 -{row['下落率']*100:.1f}%")
-
-    st.divider()
+    # メトリック表示
+    m_cols = st.columns(5)
+    for i, (_, row) in enumerate(df.head(5).iterrows()):
+        with m_cols[i]:
+            st.metric(label=f"{row['レース']} {row['馬名']}", 
+                      value=f"{row['複勝_result']:.1f}", 
+                      delta=f"-{row['下落率']*100:.1f}%")
     
-    # 全体グラフ
-    fig = px.bar(df, x='下落率', y='馬名', color='下落率',
-                 hover_data=['会場R', '複勝_直前', '複勝_確定'],
-                 text='会場R', orientation='h',
-                 title="本日の中央競馬・異常オッズ総括ランキング",
-                 color_continuous_scale='Reds')
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # データテーブル
-    st.subheader("📋 解析データ詳細")
-    st.dataframe(df[['会場R', '馬名', '複勝_直前', '複勝_確定', '下落率']].style.format({'下落率': '{:.1%}'}))
-
-else:
-    st.info("1日の終わりにサイドバーのボタンを押してください。その日の全36レース（最大）を自動解析します。")
+    st.table(df[['レース', '馬名', '複勝_odds', '複勝_result', '下落率']])
