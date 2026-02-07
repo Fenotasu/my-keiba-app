@@ -66,10 +66,16 @@ with col1:
     if st.button("🧪 【テスト】今すぐ現在のオッズを保存してみる"):
         test_rid = f"{date_input}{venue_input}09" 
         df = get_odds_data(test_rid, mode="odds")
-        if not df.empty:
-            df.to_csv(SAVE_FILE, mode='a', index=False, header=not os.path.exists(SAVE_FILE))
-            st.success(f"テスト保存成功！ファイル `{SAVE_FILE}` が作成されました。")
-            st.rerun()
+        
+        # もし夜でデータが取れなくても、ダミーデータでファイル作成を強行する
+        if df.empty:
+            st.warning("現在のオッズが取得できなかったので、テスト用データで作成します。")
+            df = pd.DataFrame({"race_id": [test_rid], "馬名": ["テスト馬"], "複勝_odds": [1.0]})
+        
+        # ファイルに書き込み
+        df.to_csv(SAVE_FILE, mode='a', index=False, header=not os.path.exists(SAVE_FILE))
+        st.success(f"成功！ファイル `{SAVE_FILE}` を確認しました。")
+        st.rerun()
     if st.button("🚀 日本時間で監視を開始"):
         st.session_state['is_running'] = True
         st.session_state['schedule'] = get_race_schedule(date_input, venue_input)
