@@ -6,6 +6,13 @@ import time
 from datetime import datetime, timedelta
 import os
 
+# コードの冒頭（importのあと）にこれを追加
+from datetime import datetime, timedelta, timezone
+
+# 日本時間のタイムゾーンを設定
+JST = timezone(timedelta(hours=+9), 'JST')
+
+# datetime.now() を datetime.now(JST) に書き換える
 # --- ページ設定 ---
 st.set_page_config(page_title="共同通信杯・リベンジ監視くん", layout="wide")
 
