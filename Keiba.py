@@ -53,6 +53,14 @@ def get_race_schedule(date_code, venue):
         return {}
 
 st.title("🤖 【日本時間・修正版】10分前監視システム")
+if st.button("🧪 【テスト】今すぐ現在のオッズを保存してみる"):
+    # 現在時刻に関係なく、直近のレース（例: 9Rなど）として保存
+    test_rid = f"{date_input}{venue_input}09" 
+    df = get_odds_data(test_rid, mode="odds")
+    if not df.empty:
+        df.to_csv(SAVE_FILE, mode='a', index=False, header=not os.path.exists(SAVE_FILE))
+        st.success(f"テスト保存成功！ファイル `{SAVE_FILE}` が作成されました。")
+        st.rerun()
 st.write(f"現在時刻 (日本): {datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')}")
 
 col1, col2 = st.columns([1, 2])
