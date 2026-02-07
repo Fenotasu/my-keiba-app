@@ -68,7 +68,15 @@ col1, col2 = st.columns([1, 2])
 with col1:
     date_input = st.text_input("開催日(8桁)", value=current_date_jst)
     venue_input = st.selectbox("会場", ["05(東京)", "08(京都)", "10(小倉)"])[:2]
-    
+
+# venue_input = ... のすぐ下に貼り付け
+    if st.button("🧪 【テスト】今すぐ現在のオッズを保存してみる"):
+        test_rid = f"{date_input}{venue_input}09" 
+        df = get_odds_data(test_rid, mode="odds")
+        if not df.empty:
+            df.to_csv(SAVE_FILE, mode='a', index=False, header=not os.path.exists(SAVE_FILE))
+            st.success(f"テスト保存成功！ファイル `{SAVE_FILE}` が作成されました。")
+            st.rerun()
     if st.button("🚀 日本時間で監視を開始"):
         st.session_state['is_running'] = True
         st.session_state['schedule'] = get_race_schedule(date_input, venue_input)
