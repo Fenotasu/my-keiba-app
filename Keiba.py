@@ -53,6 +53,10 @@ def get_race_schedule(date_code, venue):
         return {}
 
 st.title("🤖 【日本時間・修正版】10分前監視システム")
+if os.path.exists(SAVE_FILE):
+    st.success(f"ファイル `{SAVE_FILE}` はサーバー内に存在します！")
+    with open(SAVE_FILE, "rb") as f:
+        st.download_button("📥 CSVをダウンロードして中身を見る", f, file_name=SAVE_FILE)
 
 st.write(f"現在時刻 (日本): {datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')}")
 
